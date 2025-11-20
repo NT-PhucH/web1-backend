@@ -1,64 +1,80 @@
-// Backend/Services/scheduleScraper.js
+const puppeteer = require("puppeteer");
 
 const delay = (time) => new Promise((resolve) => setTimeout(resolve, time));
 
 /**
- * Hàm đăng nhập vào trang QLDT (Form cũ)
+ * Hàm đăng nhập vào trang QLDT
  */
 async function performLogin(page, username, password) {
+  console.log("[SCRAPER] Đang thực hiện đăng nhập...");
+
+  // 1. Xử lý dialog cảnh báo nếu có
   page.on("dialog", async (dialog) => await dialog.accept());
 
-  // Giả lập User Agent để tránh bị chặn
+  // 2. Giả lập User Agent để tránh bị chặn và load nhanh hơn
   await page.setUserAgent(
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
   );
 
   try {
-    // Truy cập trang Login
+    // 3. Vào trang Login (Tăng timeout lên 60s)
     await page.goto("http://qldt.actvn.edu.vn/CMCSoft.IU.Web.info/Login.aspx", {
-      waitUntil: "domcontentloaded",
+      waitUntil: "domcontentloaded", // Chỉ cần tải xong khung HTML là được, không cần chờ ảnh
       timeout: 60000,
     });
   } catch (e) {
-    // Nếu lỗi timeout nhưng url vẫn đúng thì reload
+    console.log("Lỗi tải trang login, thử reload...");
     if (!page.url().includes("Login.aspx"))
       await page.reload({ waitUntil: "domcontentloaded" });
   }
 
-  // Chờ ô nhập liệu xuất hiện
+  // 4. Nhập User/Pass
   try {
-    await page.waitForSelector("#txtUserName", { timeout: 10000 });
+    await page.waitForSelector("#txtUserName", { timeout: 20000 }); // Chờ ô nhập tối đa 20s
+    await page.type("#txtUserName", username, { delay: 50 });
+    await page.type("#txtPassword", password, { delay: 50 });
   } catch (e) {
-    throw new Error("Lỗi tải trang login (Timeout selector).");
+    throw new Error("Không tìm thấy ô đăng nhập (Web trường quá lag).");
   }
 
-  // Nhập User/Pass
-  await page.type("#txtUserName", username, { delay: 20 });
-  await page.type("#txtPassword", password, { delay: 20 });
-
-  // Click nút đăng nhập
+  // 5. Click đăng nhập và CHỜ ĐIỀU HƯỚNG (Quan trọng)
   const loginBtn = await page.$("#btnSubmit");
   if (loginBtn) {
     await Promise.all([
       loginBtn.click(),
-      delay(2000), // Chờ một chút
+      // Chờ 60s cho việc chuyển trang
       page
-        .waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 })
-        .catch(() => {}),
+        .waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 })
+        .catch(() =>
+          console.log("Hết thời gian chờ chuyển trang, nhưng vẫn thử tiếp...")
+        ),
     ]);
   }
+
+  // 6. Kiểm tra xem đã vào được chưa
+  if (page.url().includes("Login.aspx")) {
+    // Thử tìm thông báo lỗi
+    const errorText = await page.evaluate(() => {
+      const el = document.querySelector("#lblErrorInfo");
+      return el ? el.innerText : "";
+    });
+    throw new Error(
+      `Đăng nhập thất bại: ${errorText || "Sai mật khẩu hoặc lỗi hệ thống"}`
+    );
+  }
+
+  console.log("[SCRAPER] Đăng nhập thành công!");
   return true;
 }
 
 /**
- * Hàm lấy tên sinh viên (Dùng cho API /api/login)
+ * Hàm lấy tên sinh viên
  */
 async function fetchStudentName(browser, username, password) {
   const page = await browser.newPage();
   try {
     await performLogin(page, username, password);
 
-    // Lấy tên sinh viên
     const studentName = await page.evaluate(() => {
       const el =
         document.querySelector("#lblStudentName") ||
@@ -79,30 +95,43 @@ async function fetchStudentName(browser, username, password) {
  */
 async function fetchSchedule(browser, username, password) {
   const page = await browser.newPage();
+
+  // Tắt tải ảnh và font để chạy nhanh hơn
+  await page.setRequestInterception(true);
+  page.on("request", (req) => {
+    if (["image", "stylesheet", "font"].includes(req.resourceType())) {
+      req.abort();
+    } else {
+      req.continue();
+    }
+  });
+
   try {
     // 1. Đăng nhập
     await performLogin(page, username, password);
 
-    console.log("--> Vào trang Report TKB...");
+    console.log("[SCRAPER] Đang vào trang Lịch học...");
 
     // 2. Vào trang Lịch học
     await page.goto(
       "http://qldt.actvn.edu.vn/CMCSoft.IU.Web.info/Reports/Form/StudentTimeTable.aspx",
-      { waitUntil: "networkidle2", timeout: 60000 }
+      { waitUntil: "domcontentloaded", timeout: 60000 }
     );
 
-    // 3. Chờ bảng hiện ra
+    // 3. Chờ bảng hiện ra (ĐÂY LÀ CHỖ BỊ LỖI TRƯỚC ĐÓ)
     try {
-      await page.waitForSelector("table", { timeout: 10000 });
+      console.log("Đang chờ bảng lịch xuất hiện...");
+      // Tăng timeout lên 60000 (60 giây)
+      await page.waitForSelector("table", { timeout: 60000 });
     } catch (e) {
-      await page.reload({ waitUntil: "domcontentloaded" });
-      await page.waitForSelector("table", { timeout: 10000 });
+      throw new Error(
+        "Quá thời gian chờ (60s) mà không thấy bảng lịch. Web trường quá chậm."
+      );
     }
 
-    // 4. Cào dữ liệu (Logic giữ nguyên từ code cũ)
+    // 4. Cào dữ liệu
     const scheduleData = await page.evaluate(() => {
       const tables = Array.from(document.querySelectorAll("table"));
-      // Tìm bảng chứa dữ liệu lịch học
       const table = tables.find(
         (t) =>
           t.innerText.includes("Lớp học phần") &&
@@ -191,7 +220,7 @@ async function fetchSchedule(browser, username, password) {
     return scheduleData;
   } catch (error) {
     await page.close();
-    throw error; // Ném lỗi để server.js xử lý
+    throw error;
   }
 }
 
