@@ -103,17 +103,19 @@ app.post("/api/login", async (req, res) => {
 
 // --- API LẤY ĐIỂM THI (Nguồn: KTDBCL Microsoft SSO) ---
 app.post("/api/grades", async (req, res) => {
-  console.log("[GRADES] Khoi tao scrape diem thi (Microsoft SSO)...");
-  let browser;
+  // Không bắt buộc phải có user/pass từ body nữa
+  const { username, password } = req.body;
 
-  // Môi trường DEV: headless = false (hiện lên để bạn đăng nhập tay)
+  console.log(`[GRADES] Yêu cầu mở trình duyệt lấy điểm...`);
+
+  let browser;
   const headless = process.env.NODE_ENV === "production";
 
   try {
     browser = await initBrowser(headless);
 
-    // Gọi hàm từ gradeScraper.js
-    const gradesData = await fetchStudentGrades(browser);
+    // Truyền user/pass (nếu có) hoặc undefined (nếu không có)
+    const gradesData = await fetchStudentGrades(browser, username, password);
 
     await browser.close();
     return res.json({ success: true, data: gradesData });
