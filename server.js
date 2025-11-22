@@ -25,21 +25,20 @@ async function initBrowser(headlessOverride = true) {
   console.log("Đang khởi động Browser...");
 
   const isProd = process.env.NODE_ENV === "production";
-  // Nếu là Production thì luôn Headless
-  // Nếu là Dev:
-  // - Lấy lịch (Form cũ) -> Headless true (cho nhanh)
-  // - Lấy điểm (SSO) -> Headless false (để nhập tay)
   const finalHeadless = isProd ? true : headlessOverride;
 
   return await puppeteer.launch({
+    // SỬA LẠI PHẦN ARGS NHƯ SAU:
     args: [
+      "--start-maximized", // <-- Mở full màn hình ngay lập tức
+      "--window-position=0,0", // <-- Đưa về góc trên cùng bên trái (dễ thấy)
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
-      "--single-process",
-      "--no-zygote",
+      // "--single-process", // Đã xóa dòng này để tránh lỗi crash
     ],
     headless: finalHeadless ? "new" : false,
+    defaultViewport: null, // <-- Quan trọng: Để nội dung web tự tràn màn hình
     executablePath:
       process.env.NODE_ENV === "production"
         ? process.env.PUPPETEER_EXECUTABLE_PATH
