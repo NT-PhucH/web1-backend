@@ -2,39 +2,31 @@ const puppeteer = require("puppeteer");
 
 // URL cấu hình
 const LOGIN_URL = "https://ktdbcl.actvn.edu.vn/dang-nhap.html";
+const ACCOUNT_URL =
+  "https://ktdbcl.actvn.edu.vn/khao-thi/hvsv/thong-tin-tai-khoan.html";
 const GRADES_URL =
   "https://ktdbcl.actvn.edu.vn/khao-thi/hvsv/xem-diem-thi.html";
 
 async function fetchStudentGrades(browser, username, password) {
-  // Lấy page đầu tiên
   const pages = await browser.pages();
   const page = pages.length > 0 ? pages[0] : await browser.newPage();
 
-  // ============================================================
-  // 🔴 ĐOẠN CODE "HACK" ĐỂ ĐẨY CỬA SỔ RA MÀN HÌNH CHÍNH (WINDOWS)
-  // ============================================================
+  // --- FORCE FOCUS WINDOW ---
   try {
     const session = await page.target().createCDPSession();
     const { windowId } = await session.send("Browser.getWindowForTarget");
-
-    // Bước 1: Thu nhỏ cửa sổ
     await session.send("Browser.setWindowBounds", {
       windowId,
       bounds: { windowState: "minimized" },
     });
-
-    // Chờ 0.5 giây để Windows kịp xử lý
     await new Promise((r) => setTimeout(r, 500));
-
-    // Bước 2: Phóng to và bắt buộc Focus (Normal hoặc Maximized)
     await session.send("Browser.setWindowBounds", {
       windowId,
       bounds: { windowState: "maximized" },
     });
   } catch (err) {
-    console.log("Không thể set focus window (có thể do mode headless)", err);
+    console.log("Lỗi focus window:", err.message);
   }
-  // ============================================================
 
   await page.setUserAgent(
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -46,13 +38,11 @@ async function fetchStudentGrades(browser, username, password) {
     // 1. Vào trang đăng nhập
     await page.goto(LOGIN_URL, { waitUntil: "networkidle2", timeout: 60000 });
 
-    // Click nút đăng nhập Microsoft (nếu có)
     try {
       const btnMicrosoft = await page.$("a[href*='login.microsoftonline.com']");
       if (btnMicrosoft) await btnMicrosoft.click();
     } catch (e) {}
 
-    // Điền Email nếu có
     if (username) {
       try {
         await page.waitForSelector('input[type="email"]', { timeout: 5000 });
@@ -64,24 +54,65 @@ async function fetchStudentGrades(browser, username, password) {
     console.log(
       "-------------------------------------------------------------"
     );
-    console.log("⚠️  CỬA SỔ ĐÃ BẬT LÊN -> VUI LÒNG NHẬP MẬT KHẨU...");
+    console.log("⚠️  VUI LÒNG ĐĂNG NHẬP TRÊN CỬA SỔ CHROME...");
     console.log(
       "-------------------------------------------------------------"
     );
 
-    // --- CHECK LOGOUT ĐỂ BIẾT ĐÃ LOGIN THÀNH CÔNG ---
+    // Chờ đăng nhập thành công (có nút Đăng xuất)
     await page.waitForFunction(
       () => document.body.innerText.includes("Đăng xuất"),
       { timeout: 0 }
     );
+    console.log("[SCRAPER] Login thành công!");
 
-    console.log("[SCRAPER] Login thành công! Chuyển trang...");
+    // ============================================================
+    // 2. VÀO TRANG LẤY THÔNG TIN CÁ NHÂN (HỌ TÊN + MSSV)
+    // ============================================================
+    console.log("[SCRAPER] Đang lấy thông tin sinh viên...");
+    await page.goto(ACCOUNT_URL, { waitUntil: "networkidle2", timeout: 60000 });
 
-    // 2. Vào trang xem điểm
+    const studentInfo = await page.evaluate(() => {
+      let name = "Không xác định";
+      let mssv = "CT......";
+
+      // Tìm trong các bảng (table)
+      const tds = Array.from(document.querySelectorAll("td"));
+
+      for (let i = 0; i < tds.length; i++) {
+        const text = tds[i].innerText.trim().toLowerCase();
+        const nextTd = tds[i + 1]; // Ô bên cạnh thường chứa giá trị
+
+        if (!nextTd) continue;
+
+        // Tìm Họ tên
+        if (text.includes("họ và tên") || text.includes("họ tên")) {
+          name = nextTd.innerText.trim();
+        }
+
+        // Tìm Email để tách MSSV
+        if (text.includes("email") || text.includes("thư điện tử")) {
+          const email = nextTd.innerText.trim(); // VD: CT090235@actvn.edu.vn
+          if (email.includes("@")) {
+            mssv = email.split("@")[0].toUpperCase(); // Lấy phần trước @
+          }
+        }
+      }
+      return { name, mssv };
+    });
+
+    console.log(
+      `[SCRAPER] Tìm thấy: ${studentInfo.name} - ${studentInfo.mssv}`
+    );
+
+    // ============================================================
+    // 3. VÀO TRANG XEM ĐIỂM
+    // ============================================================
+    console.log("[SCRAPER] Đang chuyển sang trang điểm...");
     await page.goto(GRADES_URL, { waitUntil: "networkidle2", timeout: 60000 });
     await page.waitForSelector("table", { timeout: 30000 });
 
-    // 3. Bóc tách và Lọc trùng
+    // Bóc tách điểm (Giữ nguyên logic lọc trùng)
     const gradesData = await page.evaluate(() => {
       const uniqueSubjects = {};
       const tables = document.querySelectorAll("table");
@@ -100,8 +131,8 @@ async function fetchStudentGrades(browser, username, password) {
           return txt ? parseFloat(txt.replace(",", ".")) : 0;
         };
 
-        const subjectName = getText(4); // Cột 4
-        const attempt = parseInt(getText(5)) || 1; // Cột 5
+        const subjectName = getText(4);
+        const attempt = parseInt(getText(5)) || 1;
 
         if (!subjectName) continue;
 
@@ -127,9 +158,13 @@ async function fetchStudentGrades(browser, username, password) {
       return Object.values(uniqueSubjects);
     });
 
-    console.log(`[SCRAPER] Xong! Lấy được ${gradesData.length} môn.`);
     await page.close();
-    return gradesData;
+
+    // TRẢ VỀ CẢ ĐIỂM VÀ THÔNG TIN SINH VIÊN
+    return {
+      grades: gradesData,
+      info: studentInfo,
+    };
   } catch (error) {
     console.error("[SCRAPER ERROR]", error);
     if (page) await page.close();
